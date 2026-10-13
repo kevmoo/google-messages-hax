@@ -7,7 +7,17 @@ import 'dart:io';
 
 import 'models.dart';
 
-/// Interface for inspecting the Google Messages PWA in read-only mode.
+/// Signature for executing external OS processes (`osascript`, `swift`),
+/// injectable in tests to verify client behavior without a live browser.
+typedef ProcessRunner =
+    Future<ProcessResult> Function(String executable, List<String> arguments);
+
+Future<ProcessResult> _defaultProcessRunner(
+  String executable,
+  List<String> arguments,
+) => Process.run(executable, arguments);
+
+/// Interface for inspecting and automating the Google Messages PWA.
 abstract interface class MessagesClient {
   /// Lists conversations from the sidebar, optionally paginating
   /// [loadMorePages] times via the `"Load more conversations"` control without
@@ -36,6 +46,33 @@ abstract interface class MessagesClient {
   Future<List<SpamConversationSummary>> listSpamAndBlocked({
     int scrollPages = 3,
   });
+
+  /// Sends [text] to the conversation matching [queryOrId] using JXA
+  /// `InputEvent` composition paired with a native `AXPress` on `Send SMS`.
+  ///
+  /// Enforces [checkUnreadSafety] before switching threads unless
+  /// [allowMarkRead] is `true`. When [dryRun] is `true`, validates the target
+  /// conversation and unread safety without typing or sending.
+  Future<SendMessageResult> sendMessage(
+    String queryOrId,
+    String text, {
+    int loadMorePages = 0,
+    bool allowMarkRead = false,
+    bool dryRun = false,
+  });
+
+  /// Archives conversations matching each entry in [queriesOrIds] via the
+  /// sidebar options menu (`button.menu-button` -> `Archive`) without opening
+  /// or marking unread threads as read.
+  Future<List<ArchiveConversationResult>> archiveConversations(
+    List<String> queriesOrIds, {
+    int loadMorePages = 0,
+    bool dryRun = false,
+  });
+
+  /// Audits the live Google Messages DOM (zero clicks) to verify that all
+  /// required CSS selectors and `data-e2e-*` contracts are present.
+  Future<DomHealthReport> checkDomHealth();
 }
 
 /// Exception thrown when the Google Messages PWA cannot be reached or parsed.
@@ -97,6 +134,40 @@ final class HybridMessagesClient implements MessagesClient {
     (client) => client.listSpamAndBlocked(scrollPages: scrollPages),
   );
 
+  @override
+  Future<SendMessageResult> sendMessage(
+    String queryOrId,
+    String text, {
+    int loadMorePages = 0,
+    bool allowMarkRead = false,
+    bool dryRun = false,
+  }) => _runWithPolicy(
+    (client) => client.sendMessage(
+      queryOrId,
+      text,
+      loadMorePages: loadMorePages,
+      allowMarkRead: allowMarkRead,
+      dryRun: dryRun,
+    ),
+  );
+
+  @override
+  Future<List<ArchiveConversationResult>> archiveConversations(
+    List<String> queriesOrIds, {
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) => _runWithPolicy(
+    (client) => client.archiveConversations(
+      queriesOrIds,
+      loadMorePages: loadMorePages,
+      dryRun: dryRun,
+    ),
+  );
+
+  @override
+  Future<DomHealthReport> checkDomHealth() =>
+      _runWithPolicy((client) => client.checkDomHealth());
+
   Future<T> _runWithPolicy<T>(
     Future<T> Function(MessagesClient client) action,
   ) async {
@@ -121,12 +192,17 @@ final class HybridMessagesClient implements MessagesClient {
 bool _isAppleEventsJsDisabled(String message) =>
     message.contains('Executing JavaScript through AppleScript is turned off');
 
-/// JXA (`osascript -l JavaScript`) client that evaluates read-only DOM queries
-/// inside the Google Messages tab in the background (`hasFocus: false`).
+/// JXA (`osascript -l JavaScript`) client that evaluates DOM queries and
+/// actions inside the Google Messages tab in the background
+/// (`hasFocus: false`).
 final class JxaMessagesClient implements MessagesClient {
   final String chromeBundleId;
+  final ProcessRunner _processRunner;
 
-  const JxaMessagesClient({this.chromeBundleId = 'com.google.Chrome'});
+  const JxaMessagesClient({
+    this.chromeBundleId = 'com.google.Chrome',
+    ProcessRunner processRunner = _defaultProcessRunner,
+  }) : _processRunner = processRunner;
 
   @override
   Future<List<ConversationSummary>> listConversations({
@@ -155,15 +231,7 @@ final class JxaMessagesClient implements MessagesClient {
     bool allowMarkRead = false,
   }) async {
     final conversations = await listConversations(loadMorePages: loadMorePages);
-    final matches = findMatchingConversations(conversations, queryOrId);
-    if (matches.isEmpty) {
-      throw MessagesClientException(
-        'No conversation matching "$queryOrId" in ${conversations.length} '
-        'loaded conversations.',
-      );
-    }
-
-    final target = matches.first;
+    final target = _requireSingleMatch(conversations, queryOrId);
     final active = _findActiveConversation(conversations);
     final blockReason = checkUnreadSafety(
       target: target,
@@ -205,9 +273,138 @@ final class JxaMessagesClient implements MessagesClient {
     ];
   }
 
+  @override
+  Future<SendMessageResult> sendMessage(
+    String queryOrId,
+    String text, {
+    int loadMorePages = 0,
+    bool allowMarkRead = false,
+    bool dryRun = false,
+  }) async {
+    final trimmedText = text.trim();
+    if (trimmedText.isEmpty) {
+      throw const MessagesClientException('Message text must not be empty.');
+    }
+    final conversations = await listConversations(loadMorePages: loadMorePages);
+    final target = _requireSingleMatch(conversations, queryOrId);
+    final active = _findActiveConversation(conversations);
+    final blockReason = checkUnreadSafety(
+      target: target,
+      activeConversation: active,
+      allowMarkRead: allowMarkRead,
+    );
+    if (blockReason != null) {
+      throw MessagesClientException(blockReason);
+    }
+    if (dryRun) {
+      return SendMessageResult(
+        conversation: target,
+        text: trimmedText,
+        dryRun: true,
+        sent: false,
+        backendUsed: MessagesBackend.jxa,
+      );
+    }
+    return _executeSendAndRestore(
+      target: target,
+      active: active,
+      text: trimmedText,
+      allowMarkRead: allowMarkRead,
+    );
+  }
+
+  Future<SendMessageResult> _executeSendAndRestore({
+    required ConversationSummary target,
+    required ConversationSummary? active,
+    required String text,
+    required bool allowMarkRead,
+  }) async {
+    final restoreHref =
+        (active != null && !active.isUnread && active.href != target.href)
+        ? active.href
+        : null;
+    String? restored;
+    try {
+      final prepStatus = await _runJxa(
+        _buildJxaSendPrepareScript(
+          targetHref: target.href,
+          text: text,
+          allowMarkRead: allowMarkRead,
+        ),
+      );
+      if (prepStatus != 'READY_TO_PRESS') {
+        throw MessagesClientException(
+          'Failed to prepare message in "${target.name}" ($prepStatus).',
+        );
+      }
+      final axStatus = await _runSwift(_buildSwiftPressSendScript());
+      if (!axStatus.startsWith('PRESSED:')) {
+        throw MessagesClientException(
+          'Failed to press Send SMS button via Accessibility ($axStatus).',
+        );
+      }
+    } finally {
+      if (restoreHref != null && restoreHref.isNotEmpty) {
+        restored = await _runJxa(_buildJxaRestoreThreadScript(restoreHref));
+      }
+    }
+    return SendMessageResult(
+      conversation: target,
+      text: text,
+      dryRun: false,
+      sent: true,
+      restoredActiveHref: restored,
+      backendUsed: MessagesBackend.jxa,
+    );
+  }
+
+  @override
+  Future<List<ArchiveConversationResult>> archiveConversations(
+    List<String> queriesOrIds, {
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    if (queriesOrIds.isEmpty) return const [];
+    final conversations = await listConversations(loadMorePages: loadMorePages);
+    final targets = [
+      for (final q in queriesOrIds) _requireSingleMatch(conversations, q),
+    ];
+    if (dryRun) {
+      return [
+        for (final t in targets)
+          ArchiveConversationResult(
+            conversation: t,
+            dryRun: true,
+            archived: false,
+            backendUsed: MessagesBackend.jxa,
+          ),
+      ];
+    }
+    final raw = await _runJxa(
+      _buildJxaArchiveScript([for (final t in targets) t.href]),
+    );
+    final statuses = jsonDecode(raw) as Map<String, Object?>;
+    return [
+      for (final t in targets)
+        ArchiveConversationResult(
+          conversation: t,
+          dryRun: false,
+          archived: statuses[t.href] == 'ARCHIVED',
+          backendUsed: MessagesBackend.jxa,
+        ),
+    ];
+  }
+
+  @override
+  Future<DomHealthReport> checkDomHealth() async {
+    final raw = await _runJxa(_buildJxaDomHealthScript());
+    final map = jsonDecode(raw) as Map<String, Object?>;
+    return DomHealthReport.fromJson(map);
+  }
+
   Future<String> _runJxa(String innerScript) async {
     final wrapped = _wrapJxaTabScript(chromeBundleId, innerScript);
-    final result = await Process.run('osascript', [
+    final result = await _processRunner('osascript', [
       '-l',
       'JavaScript',
       '-e',
@@ -220,12 +417,25 @@ final class JxaMessagesClient implements MessagesClient {
     }
     return (result.stdout as String).trim();
   }
+
+  Future<String> _runSwift(String swiftSource) async {
+    final result = await _processRunner('swift', ['-e', swiftSource]);
+    if (result.exitCode != 0) {
+      throw MessagesClientException(
+        'Swift AX execution failed: ${(result.stderr as String).trim()}',
+      );
+    }
+    return (result.stdout as String).trim();
+  }
 }
 
 /// Native macOS Accessibility (`AXUIElement` via Swift) client that reads the
 /// Google Messages PWA without requiring `Allow JavaScript from Apple Events`.
 final class AxMessagesClient implements MessagesClient {
-  const AxMessagesClient();
+  final ProcessRunner _processRunner;
+
+  const AxMessagesClient({ProcessRunner processRunner = _defaultProcessRunner})
+    : _processRunner = processRunner;
 
   @override
   Future<List<ConversationSummary>> listConversations({
@@ -255,14 +465,7 @@ final class AxMessagesClient implements MessagesClient {
     bool allowMarkRead = false,
   }) async {
     final conversations = await listConversations(loadMorePages: loadMorePages);
-    final matches = findMatchingConversations(conversations, queryOrId);
-    if (matches.isEmpty) {
-      throw MessagesClientException(
-        'No conversation matching "$queryOrId" in ${conversations.length} '
-        'loaded conversations.',
-      );
-    }
-    final target = matches.first;
+    final target = _requireSingleMatch(conversations, queryOrId);
     final active = _findActiveConversation(conversations);
     final blockReason = checkUnreadSafety(
       target: target,
@@ -294,8 +497,47 @@ final class AxMessagesClient implements MessagesClient {
     );
   }
 
+  @override
+  Future<SendMessageResult> sendMessage(
+    String queryOrId,
+    String text, {
+    int loadMorePages = 0,
+    bool allowMarkRead = false,
+    bool dryRun = false,
+  }) async {
+    throw const MessagesClientException(
+      'Sending messages requires the hybrid JXA + AX backend '
+      '("Allow JavaScript from Apple Events").',
+    );
+  }
+
+  @override
+  Future<List<ArchiveConversationResult>> archiveConversations(
+    List<String> queriesOrIds, {
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    throw const MessagesClientException(
+      'Archiving conversations requires the JXA backend '
+      '("Allow JavaScript from Apple Events").',
+    );
+  }
+
+  @override
+  Future<DomHealthReport> checkDomHealth() async {
+    final conversations = await listConversations();
+    final counts = <String, int>{'ax.conversations': conversations.length};
+    final missing = <String>[if (conversations.isEmpty) 'ax.conversations'];
+    return DomHealthReport(
+      ok: missing.isEmpty,
+      selectorCounts: counts,
+      missingRequiredSelectors: missing,
+      backendUsed: MessagesBackend.ax,
+    );
+  }
+
   Future<String> _runSwift(String swiftSource) async {
-    final result = await Process.run('swift', ['-e', swiftSource]);
+    final result = await _processRunner('swift', ['-e', swiftSource]);
     if (result.exitCode != 0) {
       throw MessagesClientException(
         'Swift AX execution failed: ${(result.stderr as String).trim()}',
@@ -303,6 +545,20 @@ final class AxMessagesClient implements MessagesClient {
     }
     return (result.stdout as String).trim();
   }
+}
+
+ConversationSummary _requireSingleMatch(
+  List<ConversationSummary> conversations,
+  String queryOrId,
+) {
+  final matches = findMatchingConversations(conversations, queryOrId);
+  if (matches.isEmpty) {
+    throw MessagesClientException(
+      'No conversation matching "$queryOrId" in ${conversations.length} '
+      'loaded conversations.',
+    );
+  }
+  return matches.first;
 }
 
 ConversationSummary? _findActiveConversation(
@@ -433,9 +689,208 @@ window.__gmessagesHax = {
       const urls = (snippet.match(urlRegex) || []).filter(u => !/^[0-9.]+$/.test(u));
       return {name, snippet, timestamp, actionLabel, urls};
     });
+  },
+  checkDomHealth() {
+    const required = [
+      "mws-conversation-list-item",
+      "a[data-e2e-conversation]",
+      "[data-e2e-conversation-name]",
+      "[data-e2e-conversation-snippet]",
+      "mws-conversation-list-item button.menu-button",
+      "button[data-e2e-branded-header-menu-button]"
+    ];
+    const optionalActiveThread = [
+      "mws-message-wrapper",
+      "div[contenteditable='true'][data-e2e-message-input-box]",
+      "mw-message-send-button button"
+    ];
+    const selectorCounts = {};
+    const missingRequiredSelectors = [];
+    for (const sel of required) {
+      const count = document.querySelectorAll(sel).length;
+      selectorCounts[sel] = count;
+      if (count === 0) missingRequiredSelectors.push(sel);
+    }
+    for (const sel of optionalActiveThread) {
+      selectorCounts[sel] = document.querySelectorAll(sel).length;
+    }
+    return {
+      ok: missingRequiredSelectors.length === 0,
+      selectorCounts,
+      missingRequiredSelectors
+    };
   }
 };
 ''');
+
+String _buildJxaDomHealthScript() => '''
+msgTab.execute({javascript: domHelpers});
+msgTab.execute({javascript: "JSON.stringify(window.__gmessagesHax.checkDomHealth())"});
+''';
+
+String _buildJxaSendPrepareScript({
+  required String targetHref,
+  required String text,
+  required bool allowMarkRead,
+}) {
+  final targetHrefJson = jsonEncode(targetHref);
+  final textJson = jsonEncode(text);
+  final allowUnreadJson = jsonEncode(allowMarkRead);
+  return '''
+const targetHref = $targetHrefJson;
+const messageText = $textJson;
+const allowUnread = $allowUnreadJson;
+const switched = msgTab.execute({javascript: `(() => {
+  const a = document.querySelector('a[href="' + ${jsonEncode(targetHref)} + '"]');
+  if (!a) return "NOT_FOUND";
+  if (!${jsonEncode(allowMarkRead)} && a.getAttribute("data-e2e-is-unread") === "true") {
+    return "UNREAD_ABORT";
+  }
+  a.click();
+  return "OK";
+})()`});
+if (switched !== "OK") {
+  switched;
+} else {
+  delay(0.8);
+  const typed = msgTab.execute({javascript: `(() => {
+    const box = document.querySelector('div[contenteditable="true"][data-e2e-message-input-box]');
+    if (!box) return "NO_COMPOSE_BOX";
+    box.focus();
+    box.textContent = $textJson;
+    box.dispatchEvent(new InputEvent("input", {bubbles: true, data: $textJson, inputType: "insertText"}));
+    return "TYPED";
+  })()`});
+  if (typed !== "TYPED") {
+    typed;
+  } else {
+    delay(0.45);
+    msgTab.execute({javascript: `(() => {
+      const btn = document.querySelector("mw-message-send-button button");
+      if (!btn) return "NO_SEND_BUTTON";
+      if (btn.disabled) return "SEND_BUTTON_DISABLED";
+      return "READY_TO_PRESS";
+    })()`});
+  }
+}
+''';
+}
+
+String _buildJxaRestoreThreadScript(String restoreHref) =>
+    '''
+msgTab.execute({javascript: `(() => {
+  const a = document.querySelector('a[href="' + ${jsonEncode(restoreHref)} + '"]');
+  if (a && a.getAttribute("data-e2e-is-unread") !== "true") {
+    a.click();
+  }
+  const first = document.querySelector("mws-conversation-list-item");
+  if (first) first.scrollIntoView({block: "start"});
+})()`});
+delay(0.35);
+msgTab.execute({javascript: "location.pathname"});
+''';
+
+String _buildJxaArchiveScript(List<String> targetHrefs) {
+  final hrefsJson = jsonEncode(targetHrefs);
+  return '''
+const targets = $hrefsJson;
+const outcomes = {};
+for (const href of targets) {
+  const opened = msgTab.execute({javascript: `(() => {
+    const a = document.querySelector('a[href=' + \${JSON.stringify(href)} + ']');
+    if (!a) return "NOT_FOUND";
+    a.scrollIntoView({block: "nearest"});
+    const item = a.closest("mws-conversation-list-item");
+    const btn = item ? item.querySelector("button.menu-button") : null;
+    if (!btn) return "NO_MENU_BTN";
+    btn.click();
+    return "OPENED";
+  })()`});
+  if (opened !== "OPENED") {
+    outcomes[href] = opened;
+    continue;
+  }
+  delay(0.2);
+  const clicked = msgTab.execute({javascript: `(() => {
+    const archiveBtn = Array.from(document.querySelectorAll("[role=menuitem], .mat-mdc-menu-item"))
+      .find(el => (el.innerText || "").trim() === "Archive");
+    if (!archiveBtn) return "NO_ARCHIVE_ITEM";
+    archiveBtn.click();
+    return "ARCHIVED";
+  })()`});
+  outcomes[href] = clicked;
+  delay(0.35);
+}
+JSON.stringify(outcomes);
+''';
+}
+
+String _buildSwiftPressSendScript() => r'''
+import ApplicationServices
+import AppKit
+import Foundation
+
+let pwaApps = NSWorkspace.shared.runningApplications.filter {
+  ($0.bundleIdentifier ?? "").hasPrefix("com.google.Chrome.app.") ||
+  ($0.bundleURL?.path ?? "").contains("Messages.app") ||
+  ($0.localizedName ?? "").contains("Messages")
+}
+let chromeApps = NSWorkspace.shared.runningApplications.filter {
+  $0.bundleIdentifier == "com.google.Chrome"
+}
+
+for app in (pwaApps + chromeApps) {
+  let axApp = AXUIElementCreateApplication(app.processIdentifier)
+  AXUIElementSetAttributeValue(axApp, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+  AXUIElementSetAttributeValue(axApp, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+}
+Thread.sleep(forTimeInterval: 0.15)
+
+func attr(_ el: AXUIElement, _ name: String) -> Any? {
+  var v: CFTypeRef?
+  return AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success ? v : nil
+}
+
+func findSendButton(_ el: AXUIElement, _ depth: Int = 0) -> AXUIElement? {
+  if depth > 25 { return nil }
+  let role = attr(el, kAXRoleAttribute) as? String ?? ""
+  if role == "AXButton" {
+    let title = attr(el, kAXTitleAttribute) as? String ?? ""
+    let desc = attr(el, kAXDescriptionAttribute) as? String ?? ""
+    let classes = (attr(el, "AXDOMClassList") as? [String]) ?? []
+    if title.contains("Send") || desc.contains("Send") || classes.contains("send-button") {
+      return el
+    }
+  }
+  if let kids = attr(el, kAXChildrenAttribute) as? [AXUIElement] {
+    for k in kids {
+      if let found = findSendButton(k, depth + 1) { return found }
+    }
+  }
+  return nil
+}
+
+var sendButton: AXUIElement? = nil
+for app in (pwaApps + chromeApps) {
+  let axApp = AXUIElementCreateApplication(app.processIdentifier)
+  if let wins = attr(axApp, kAXWindowsAttribute) as? [AXUIElement] {
+    for w in wins {
+      if let found = findSendButton(w) {
+        sendButton = found
+        break
+      }
+    }
+  }
+  if sendButton != nil { break }
+}
+
+guard let btn = sendButton else {
+  print("SEND_BUTTON_NOT_FOUND")
+  exit(0)
+}
+let err = AXUIElementPerformAction(btn, kAXPressAction as CFString)
+print(err == .success ? "PRESSED:0" : "AX_ERROR:\(err.rawValue)")
+''';
 
 String _buildJxaSpamScript(int scrollPages) =>
     '''

@@ -62,3 +62,24 @@ Audit conversations in the "Spam & blocked" modal (including extracted URLs):
 ```sh
 dart run bin/gmessages.dart spam
 ```
+
+Validate live DOM selector health (zero clicks) before running automation:
+
+```sh
+dart run bin/gmessages.dart doctor
+```
+
+Send a message (e.g., `"STOP"`) using hybrid JXA `InputEvent` composition +
+Swift `AXPress` on `Send SMS` (enforces unread safety unless `--allow-mark-read`
+is set, and supports `--dry-run`):
+
+```sh
+dart run bin/gmessages.dart send "(555) 010-1234" "STOP" --dry-run
+```
+
+Archive one or more conversations directly from the sidebar options menu without
+opening them:
+
+```sh
+dart run bin/gmessages.dart archive "(555) 010-1234" "thread-202" --dry-run
+```

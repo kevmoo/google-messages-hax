@@ -8,11 +8,15 @@ export 'src/messages_client.dart'
         HybridMessagesClient,
         JxaMessagesClient,
         MessagesClient,
-        MessagesClientException;
+        MessagesClientException,
+        ProcessRunner;
 export 'src/models.dart'
     show
+        ArchiveConversationResult,
         ConversationSummary,
+        DomHealthReport,
         MessagesBackend,
+        SendMessageResult,
         SpamConversationSummary,
         ThreadMessage,
         ThreadReadResult,

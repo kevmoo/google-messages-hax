@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:google_messages_hax/google_messages_hax.dart';
 import 'package:test/test.dart';
 
@@ -148,6 +151,147 @@ void main() {
       ]);
     });
   });
+
+  group('JxaMessagesClient with fake ProcessRunner', () {
+    final conversationsJson = jsonEncode([
+      activeReadConv.toJson(),
+      unreadConv.toJson(),
+      otherReadConv.toJson(),
+    ]);
+
+    test('blocks sendMessage to unread thread unless allowMarkRead is set', () {
+      final client = JxaMessagesClient(
+        processRunner: (exe, args) async =>
+            ProcessResult(1, 0, conversationsJson, ''),
+      );
+
+      expect(
+        () => client.sendMessage('Acme Dental', 'STOP'),
+        throwsA(
+          isA<MessagesClientException>().having(
+            (e) => e.message,
+            'message',
+            contains('UNREAD'),
+          ),
+        ),
+      );
+    });
+
+    test('sendMessage --dry-run validates without invoking AXPress', () async {
+      final calls = <String>[];
+      final client = JxaMessagesClient(
+        processRunner: (exe, args) async {
+          calls.add(exe);
+          return ProcessResult(1, 0, conversationsJson, '');
+        },
+      );
+
+      final res = await client.sendMessage(
+        'Alex and Sam',
+        'STOP',
+        dryRun: true,
+      );
+      expect(res.dryRun, isTrue);
+      expect(res.sent, isFalse);
+      expect(res.conversation.id, 'thread-202');
+      expect(calls, ['osascript']);
+    });
+
+    test(
+      'sendMessage executes JXA input, Swift AXPress, and restores active',
+      () async {
+        final calls = <String>[];
+        final client = JxaMessagesClient(
+          processRunner: (exe, args) async {
+            calls.add(exe);
+            if (exe == 'swift') {
+              return ProcessResult(2, 0, 'PRESSED:0\n', '');
+            }
+            final script = args.last;
+            if (script.contains('window.__gmessagesHax.listConversations()')) {
+              return ProcessResult(1, 0, conversationsJson, '');
+            }
+            if (script.contains('READY_TO_PRESS')) {
+              return ProcessResult(1, 0, 'READY_TO_PRESS\n', '');
+            }
+            return ProcessResult(
+              1,
+              0,
+              '/web/conversations/thread-active\n',
+              '',
+            );
+          },
+        );
+
+        final res = await client.sendMessage('Alex and Sam', 'STOP');
+        expect(res.sent, isTrue);
+        expect(res.restoredActiveHref, '/web/conversations/thread-active');
+        expect(calls, ['osascript', 'osascript', 'swift', 'osascript']);
+      },
+    );
+
+    test('archiveConversations supports dry-run and live archive', () async {
+      final client = JxaMessagesClient(
+        processRunner: (exe, args) async {
+          final script = args.last;
+          if (script.contains('window.__gmessagesHax.listConversations()')) {
+            return ProcessResult(1, 0, conversationsJson, '');
+          }
+          return ProcessResult(
+            1,
+            0,
+            jsonEncode({
+              '/web/conversations/thread-202': 'ARCHIVED',
+              '/web/conversations/thread-unread': 'ARCHIVED',
+            }),
+            '',
+          );
+        },
+      );
+
+      final dry = await client.archiveConversations([
+        'thread-202',
+        'Acme Dental',
+      ], dryRun: true);
+      expect(dry.every((r) => r.dryRun && !r.archived), isTrue);
+
+      final live = await client.archiveConversations([
+        'thread-202',
+        'Acme Dental',
+      ]);
+      expect(live.map((r) => r.conversation.id), [
+        'thread-202',
+        'thread-unread',
+      ]);
+      expect(live.every((r) => r.archived), isTrue);
+    });
+
+    test(
+      'checkDomHealth parses selector counts and missing selectors',
+      () async {
+        final client = JxaMessagesClient(
+          processRunner: (exe, args) async => ProcessResult(
+            1,
+            0,
+            jsonEncode({
+              'ok': true,
+              'selectorCounts': {
+                'mws-conversation-list-item': 25,
+                'a[data-e2e-conversation]': 25,
+              },
+              'missingRequiredSelectors': <String>[],
+            }),
+            '',
+          ),
+        );
+
+        final report = await client.checkDomHealth();
+        expect(report.ok, isTrue);
+        expect(report.selectorCounts['mws-conversation-list-item'], 25);
+        expect(report.missingRequiredSelectors, isEmpty);
+      },
+    );
+  });
 }
 
 final class _FakeMessagesClient implements MessagesClient {
@@ -195,5 +339,44 @@ final class _FakeMessagesClient implements MessagesClient {
   }) async {
     if (error != null) throw error!;
     return const [];
+  }
+
+  @override
+  Future<SendMessageResult> sendMessage(
+    String queryOrId,
+    String text, {
+    int loadMorePages = 0,
+    bool allowMarkRead = false,
+    bool dryRun = false,
+  }) async {
+    if (error != null) throw error!;
+    return SendMessageResult(
+      conversation: conversations.first,
+      text: text,
+      dryRun: dryRun,
+      sent: !dryRun,
+      backendUsed: MessagesBackend.ax,
+    );
+  }
+
+  @override
+  Future<List<ArchiveConversationResult>> archiveConversations(
+    List<String> queriesOrIds, {
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    if (error != null) throw error!;
+    return const [];
+  }
+
+  @override
+  Future<DomHealthReport> checkDomHealth() async {
+    if (error != null) throw error!;
+    return const DomHealthReport(
+      ok: true,
+      selectorCounts: {},
+      missingRequiredSelectors: [],
+      backendUsed: MessagesBackend.ax,
+    );
   }
 }

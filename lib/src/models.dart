@@ -183,6 +183,99 @@ final class SpamConversationSummary {
   };
 }
 
+/// Result of sending (or dry-run validating) a message in a conversation.
+final class SendMessageResult {
+  final ConversationSummary conversation;
+  final String text;
+  final bool dryRun;
+  final bool sent;
+  final String? restoredActiveHref;
+  final MessagesBackend backendUsed;
+
+  const SendMessageResult({
+    required this.conversation,
+    required this.text,
+    required this.dryRun,
+    required this.sent,
+    this.restoredActiveHref,
+    required this.backendUsed,
+  });
+
+  Map<String, Object?> toJson() => {
+    'conversation': conversation.toJson(),
+    'text': text,
+    'dryRun': dryRun,
+    'sent': sent,
+    if (restoredActiveHref != null) 'restoredActiveHref': restoredActiveHref,
+    'backendUsed': backendUsed.name,
+  };
+}
+
+/// Result of archiving (or dry-run validating) a conversation from the sidebar.
+final class ArchiveConversationResult {
+  final ConversationSummary conversation;
+  final bool dryRun;
+  final bool archived;
+  final MessagesBackend backendUsed;
+
+  const ArchiveConversationResult({
+    required this.conversation,
+    required this.dryRun,
+    required this.archived,
+    required this.backendUsed,
+  });
+
+  Map<String, Object?> toJson() => {
+    'conversation': conversation.toJson(),
+    'dryRun': dryRun,
+    'archived': archived,
+    'backendUsed': backendUsed.name,
+  };
+}
+
+/// Zero-click live DOM selector contract report for the Google Messages PWA.
+final class DomHealthReport {
+  final bool ok;
+  final Map<String, int> selectorCounts;
+  final List<String> missingRequiredSelectors;
+  final MessagesBackend backendUsed;
+
+  const DomHealthReport({
+    required this.ok,
+    required this.selectorCounts,
+    required this.missingRequiredSelectors,
+    required this.backendUsed,
+  });
+
+  factory DomHealthReport.fromJson(
+    Map<String, Object?> json, {
+    MessagesBackend backendUsed = MessagesBackend.jxa,
+  }) {
+    final rawCounts =
+        json['selectorCounts'] as Map<String, Object?>? ?? const {};
+    final rawMissing =
+        json['missingRequiredSelectors'] as List<Object?>? ?? const [];
+    final counts = <String, int>{
+      for (final entry in rawCounts.entries)
+        entry.key: (entry.value as num?)?.toInt() ?? 0,
+    };
+    final missing = [for (final item in rawMissing) item as String];
+    return DomHealthReport(
+      ok: json['ok'] as bool? ?? missing.isEmpty,
+      selectorCounts: counts,
+      missingRequiredSelectors: missing,
+      backendUsed: backendUsed,
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'ok': ok,
+    'selectorCounts': selectorCounts,
+    'missingRequiredSelectors': missingRequiredSelectors,
+    'backendUsed': backendUsed.name,
+  };
+}
+
 /// Extracts the conversation ID segment from a `/web/conversations/<id>` path
 /// or full URL.
 String extractConversationId(String rawHref) {
