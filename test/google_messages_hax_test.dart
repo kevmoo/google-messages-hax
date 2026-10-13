@@ -188,4 +188,12 @@ final class _FakeMessagesClient implements MessagesClient {
       backendUsed: MessagesBackend.ax,
     );
   }
+
+  @override
+  Future<List<SpamConversationSummary>> listSpamAndBlocked({
+    int scrollPages = 3,
+  }) async {
+    if (error != null) throw error!;
+    return const [];
+  }
 }

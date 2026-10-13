@@ -56,3 +56,9 @@ of an unread conversation without marking it read):
 ```sh
 dart run bin/gmessages.dart read "Alex and Sam" --scroll-pages 1
 ```
+
+Audit conversations in the "Spam & blocked" modal (including extracted URLs):
+
+```sh
+dart run bin/gmessages.dart spam
+```

@@ -88,6 +88,7 @@ Usage:
   gmessages search <query> [options]
   gmessages active [options]
   gmessages read <name-or-id> [options]
+  gmessages spam [options]
 
 Options:
 ${parser.usage}''';
@@ -149,6 +150,13 @@ Future<int> _runCli(ArgResults results, ArgParser parser) async {
       );
       _printThreadResult(thread, limit: limit, asJson: asJson);
       return 0;
+    case 'spam':
+      return _handleSpam(
+        client: client,
+        scrollPages: scrollPages > 0 ? scrollPages : 3,
+        limit: limit,
+        asJson: asJson,
+      );
     default:
       stderr.writeln('Unknown command "$command".\n');
       stderr.writeln(_usageText(parser));
@@ -194,6 +202,36 @@ Future<int> _handleList({
     final badgeText = badges.isEmpty ? 'READ' : badges.join(',');
     final ts = c.timestamp.isEmpty ? '-' : c.timestamp;
     stdout.writeln('[${c.id}] [$badgeText] ${c.name} ($ts): ${c.snippet}');
+  }
+  return 0;
+}
+
+Future<int> _handleSpam({
+  required MessagesClient client,
+  required int scrollPages,
+  required int limit,
+  required bool asJson,
+}) async {
+  final all = await client.listSpamAndBlocked(scrollPages: scrollPages);
+  final shown = limit > 0 && all.length > limit ? all.sublist(0, limit) : all;
+  if (asJson) {
+    stdout.writeln(
+      const JsonEncoder.withIndent(
+        '  ',
+      ).convert([for (final s in shown) s.toJson()]),
+    );
+    return 0;
+  }
+
+  final blockedCount = all.where((s) => s.isBlocked).length;
+  stdout.writeln(
+    'Spam & blocked: showing ${shown.length} of ${all.length} '
+    '($blockedCount user-blocked, ${all.length - blockedCount} spam-flagged)',
+  );
+  for (final s in shown) {
+    final kind = s.isBlocked ? 'BLOCKED' : 'SPAM';
+    final urlPart = s.urls.isEmpty ? '' : ' | URLs: ${s.urls.join(', ')}';
+    stdout.writeln('[$kind] ${s.name} (${s.timestamp}): ${s.snippet}$urlPart');
   }
   return 0;
 }

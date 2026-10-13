@@ -13,6 +13,7 @@ export 'src/models.dart'
     show
         ConversationSummary,
         MessagesBackend,
+        SpamConversationSummary,
         ThreadMessage,
         ThreadReadResult,
         checkUnreadSafety,

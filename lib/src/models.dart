@@ -142,6 +142,47 @@ final class ThreadReadResult {
   };
 }
 
+/// Summary of an entry in the Google Messages "Spam & blocked" dialog.
+final class SpamConversationSummary {
+  final String name;
+  final String snippet;
+  final String timestamp;
+  final String actionLabel;
+  final List<String> urls;
+
+  const SpamConversationSummary({
+    required this.name,
+    required this.snippet,
+    required this.timestamp,
+    required this.actionLabel,
+    this.urls = const [],
+  });
+
+  /// True when the row shows `"Unblock"` (user-blocked number) rather than
+  /// `"Not spam"` (auto-filtered or spam-only).
+  bool get isBlocked => actionLabel.toLowerCase() == 'unblock';
+
+  factory SpamConversationSummary.fromJson(Map<String, Object?> json) {
+    final rawUrls = json['urls'] as List<Object?>? ?? const [];
+    return SpamConversationSummary(
+      name: json['name'] as String? ?? '',
+      snippet: json['snippet'] as String? ?? '',
+      timestamp: json['timestamp'] as String? ?? '',
+      actionLabel: json['actionLabel'] as String? ?? '',
+      urls: [for (final u in rawUrls) u as String],
+    );
+  }
+
+  Map<String, Object?> toJson() => {
+    'name': name,
+    'snippet': snippet,
+    'timestamp': timestamp,
+    'actionLabel': actionLabel,
+    'isBlocked': isBlocked,
+    'urls': urls,
+  };
+}
+
 /// Extracts the conversation ID segment from a `/web/conversations/<id>` path
 /// or full URL.
 String extractConversationId(String rawHref) {

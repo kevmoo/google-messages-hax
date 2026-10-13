@@ -30,6 +30,12 @@ abstract interface class MessagesClient {
     int loadMorePages = 0,
     bool allowMarkRead = false,
   });
+
+  /// Lists conversations from the "Spam & blocked" modal dialog and closes the
+  /// modal when finished.
+  Future<List<SpamConversationSummary>> listSpamAndBlocked({
+    int scrollPages = 3,
+  });
 }
 
 /// Exception thrown when the Google Messages PWA cannot be reached or parsed.
@@ -82,6 +88,13 @@ final class HybridMessagesClient implements MessagesClient {
       loadMorePages: loadMorePages,
       allowMarkRead: allowMarkRead,
     ),
+  );
+
+  @override
+  Future<List<SpamConversationSummary>> listSpamAndBlocked({
+    int scrollPages = 3,
+  }) => _runWithPolicy(
+    (client) => client.listSpamAndBlocked(scrollPages: scrollPages),
   );
 
   Future<T> _runWithPolicy<T>(
@@ -180,6 +193,18 @@ final class JxaMessagesClient implements MessagesClient {
     );
   }
 
+  @override
+  Future<List<SpamConversationSummary>> listSpamAndBlocked({
+    int scrollPages = 3,
+  }) async {
+    final raw = await _runJxa(_buildJxaSpamScript(scrollPages));
+    final list = jsonDecode(raw) as List<Object?>;
+    return [
+      for (final item in list)
+        SpamConversationSummary.fromJson(item as Map<String, Object?>),
+    ];
+  }
+
   Future<String> _runJxa(String innerScript) async {
     final wrapped = _wrapJxaTabScript(chromeBundleId, innerScript);
     final result = await Process.run('osascript', [
@@ -256,6 +281,16 @@ final class AxMessagesClient implements MessagesClient {
       'enable "Allow JavaScript from Apple Events" for background thread '
       'switching.',
       MessagesBackend.ax,
+    );
+  }
+
+  @override
+  Future<List<SpamConversationSummary>> listSpamAndBlocked({
+    int scrollPages = 3,
+  }) async {
+    throw const MessagesClientException(
+      'Inspecting the "Spam & blocked" modal requires the JXA backend '
+      '("Allow JavaScript from Apple Events").',
     );
   }
 
@@ -347,7 +382,7 @@ $bodyScript
 ''';
 }
 
-String _domHelpersJsLiteral() => jsonEncode('''
+String _domHelpersJsLiteral() => jsonEncode(r'''
 window.__gmessagesHax = {
   listConversations() {
     const items = [...document.querySelectorAll("mws-conversation-list-item")];
@@ -386,9 +421,61 @@ window.__gmessagesHax = {
       const timestamp = (tsEl?.textContent || "").trim();
       return {id, text, ariaLabel, timestamp, isOutgoing, isUnread, isRcs};
     }).filter(m => m.text.length > 0 || m.ariaLabel.length > 0);
+  },
+  listSpam() {
+    const rows = [...document.querySelectorAll("[data-e2e-spam-and-blocked-conversation]")];
+    const urlRegex = /(?:https?:\/\/)?(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:\/[^\s"<>)]*)?/g;
+    return rows.map(r => {
+      const name = (r.querySelector("[data-e2e-spam-and-blocked-conversation-name]")?.textContent || "").trim();
+      const snippet = (r.querySelector(".conv-snippet")?.textContent || "").trim();
+      const timestamp = (r.querySelector(".conv-timestamp")?.textContent || "").trim();
+      const actionLabel = (r.querySelector("[data-e2e-unblock-unspam-button]")?.textContent || "").trim();
+      const urls = (snippet.match(urlRegex) || []).filter(u => !/^[0-9.]+$/.test(u));
+      return {name, snippet, timestamp, actionLabel, urls};
+    });
   }
 };
 ''');
+
+String _buildJxaSpamScript(int scrollPages) =>
+    '''
+msgTab.execute({javascript: domHelpers});
+let items = [];
+try {
+  msgTab.execute({javascript: `(() => {
+    if (!document.querySelector("mw-spam-and-blocked-conversations")) {
+      if (!document.querySelector("mw-nav-drawer nav")) {
+        document.querySelector("button[data-e2e-branded-header-menu-button]")?.click();
+      }
+    }
+  })()`});
+  delay(0.4);
+  msgTab.execute({javascript: `(() => {
+    if (!document.querySelector("mw-spam-and-blocked-conversations")) {
+      document.querySelector("button[data-e2e-nav-item=SPAM]")?.click();
+    }
+  })()`});
+  for (let w = 0; w < 12; w++) {
+    delay(0.4);
+    const ready = Number(msgTab.execute({javascript: "String(document.querySelectorAll(\\"[data-e2e-spam-and-blocked-conversation]\\").length)"}));
+    if (ready > 0) break;
+  }
+  for (let i = 0; i < $scrollPages; i++) {
+    const prev = Number(msgTab.execute({javascript: "String(document.querySelectorAll(\\"[data-e2e-spam-and-blocked-conversation]\\").length)"}));
+    msgTab.execute({javascript: `(() => {
+      const rows = document.querySelectorAll("[data-e2e-spam-and-blocked-conversation]");
+      if (rows.length) rows[rows.length - 1].scrollIntoView({block: "end"});
+    })()`});
+    delay(0.8);
+    const next = Number(msgTab.execute({javascript: "String(document.querySelectorAll(\\"[data-e2e-spam-and-blocked-conversation]\\").length)"}));
+    if (next === prev && next > 0) break;
+  }
+  items = JSON.parse(msgTab.execute({javascript: "JSON.stringify(window.__gmessagesHax.listSpam())"}));
+} finally {
+  msgTab.execute({javascript: `document.querySelector("mat-dialog-actions button[aria-label=Done]")?.click();`});
+}
+JSON.stringify(items);
+''';
 
 String _buildJxaListScript(int loadMorePages) =>
     '''
