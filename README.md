@@ -83,3 +83,9 @@ opening them:
 ```sh
 dart run bin/gmessages.dart archive "(555) 010-1234" "thread-202" --dry-run
 ```
+
+Mark a conversation as unread or read via the sidebar options menu:
+
+```sh
+dart run bin/gmessages.dart mark-unread "(555) 010-1234" --dry-run
+```

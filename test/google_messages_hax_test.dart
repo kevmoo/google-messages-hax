@@ -291,6 +291,25 @@ void main() {
         expect(report.missingRequiredSelectors, isEmpty);
       },
     );
+
+    test('setConversationUnread marks a read thread as unread', () async {
+      final client = JxaMessagesClient(
+        processRunner: (exe, args) async {
+          final script = args.last;
+          if (script.contains('window.__gmessagesHax.listConversations()')) {
+            return ProcessResult(1, 0, conversationsJson, '');
+          }
+          return ProcessResult(1, 0, 'UPDATED\n', '');
+        },
+      );
+
+      final updated = await client.setConversationUnread(
+        'Alex and Sam',
+        unread: true,
+      );
+      expect(updated.id, 'thread-202');
+      expect(updated.isUnread, isTrue);
+    });
   });
 }
 
@@ -367,6 +386,17 @@ final class _FakeMessagesClient implements MessagesClient {
   }) async {
     if (error != null) throw error!;
     return const [];
+  }
+
+  @override
+  Future<ConversationSummary> setConversationUnread(
+    String queryOrId, {
+    required bool unread,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    if (error != null) throw error!;
+    return conversations.first;
   }
 
   @override

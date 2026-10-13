@@ -98,6 +98,8 @@ Usage:
   gmessages spam [options]
   gmessages send <name-or-id> <message> [--dry-run] [--allow-mark-read]
   gmessages archive <name-or-id> [...more] [--dry-run]
+  gmessages mark-unread <name-or-id> [--dry-run]
+  gmessages mark-read <name-or-id> [--dry-run]
   gmessages doctor [options]
 
 Options:
@@ -170,6 +172,14 @@ Future<int> _runCli(ArgResults results, ArgParser parser) async {
     ),
     'archive' => _handleArchive(
       rest: rest,
+      client: client,
+      loadMore: loadMore,
+      dryRun: dryRun,
+      asJson: asJson,
+    ),
+    'mark-unread' || 'mark-read' => _handleSetUnread(
+      rest: rest,
+      unread: command == 'mark-unread',
       client: client,
       loadMore: loadMore,
       dryRun: dryRun,
@@ -308,6 +318,37 @@ Future<int> _handleArchive({
     stdout.writeln('$status ${r.conversation.name} [${r.conversation.id}]');
   }
   return results.every((r) => r.dryRun || r.archived) ? 0 : 1;
+}
+
+Future<int> _handleSetUnread({
+  required List<String> rest,
+  required bool unread,
+  required MessagesClient client,
+  required int loadMore,
+  required bool dryRun,
+  required bool asJson,
+}) async {
+  final cmdName = unread ? 'mark-unread' : 'mark-read';
+  if (rest.length < 2) {
+    throw FormatException('Usage: gmessages $cmdName <name-or-id> [--dry-run]');
+  }
+  final targetQuery = rest.skip(1).join(' ');
+  final updated = await client.setConversationUnread(
+    targetQuery,
+    unread: unread,
+    loadMorePages: loadMore,
+    dryRun: dryRun,
+  );
+  if (asJson) {
+    stdout.writeln(
+      const JsonEncoder.withIndent('  ').convert(updated.toJson()),
+    );
+    return 0;
+  }
+  final stateLabel = unread ? 'UNREAD' : 'READ';
+  final prefix = dryRun ? '[DRY-RUN] Would mark' : 'Marked';
+  stdout.writeln('$prefix ${updated.name} [${updated.id}] as $stateLabel');
+  return 0;
 }
 
 Future<int> _handleDoctor({

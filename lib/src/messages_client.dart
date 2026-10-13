@@ -70,6 +70,16 @@ abstract interface class MessagesClient {
     bool dryRun = false,
   });
 
+  /// Marks the conversation matching [queryOrId] as unread (`unread: true`) or
+  /// read (`unread: false`) via the sidebar options menu (`button.menu-button`
+  /// -> `Mark as unread` / `Mark as read`).
+  Future<ConversationSummary> setConversationUnread(
+    String queryOrId, {
+    required bool unread,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  });
+
   /// Audits the live Google Messages DOM (zero clicks) to verify that all
   /// required CSS selectors and `data-e2e-*` contracts are present.
   Future<DomHealthReport> checkDomHealth();
@@ -159,6 +169,21 @@ final class HybridMessagesClient implements MessagesClient {
   }) => _runWithPolicy(
     (client) => client.archiveConversations(
       queriesOrIds,
+      loadMorePages: loadMorePages,
+      dryRun: dryRun,
+    ),
+  );
+
+  @override
+  Future<ConversationSummary> setConversationUnread(
+    String queryOrId, {
+    required bool unread,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) => _runWithPolicy(
+    (client) => client.setConversationUnread(
+      queryOrId,
+      unread: unread,
       loadMorePages: loadMorePages,
       dryRun: dryRun,
     ),
@@ -396,6 +421,41 @@ final class JxaMessagesClient implements MessagesClient {
   }
 
   @override
+  Future<ConversationSummary> setConversationUnread(
+    String queryOrId, {
+    required bool unread,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    final conversations = await listConversations(loadMorePages: loadMorePages);
+    final target = _requireSingleMatch(conversations, queryOrId);
+    if (dryRun || target.isUnread == unread) {
+      return target;
+    }
+    final status = await _runJxa(
+      _buildJxaSetUnreadScript(targetHref: target.href, unread: unread),
+    );
+    if (status != 'UPDATED') {
+      throw MessagesClientException(
+        'Failed to mark "${target.name}" as '
+        '${unread ? "unread" : "read"} ($status).',
+      );
+    }
+    return ConversationSummary(
+      id: target.id,
+      href: target.href,
+      name: target.name,
+      snippet: target.snippet,
+      timestamp: target.timestamp,
+      timestampLabel: target.timestampLabel,
+      isUnread: unread,
+      isPinned: target.isPinned,
+      isMuted: target.isMuted,
+      isActive: target.isActive,
+    );
+  }
+
+  @override
   Future<DomHealthReport> checkDomHealth() async {
     final raw = await _runJxa(_buildJxaDomHealthScript());
     final map = jsonDecode(raw) as Map<String, Object?>;
@@ -519,6 +579,19 @@ final class AxMessagesClient implements MessagesClient {
   }) async {
     throw const MessagesClientException(
       'Archiving conversations requires the JXA backend '
+      '("Allow JavaScript from Apple Events").',
+    );
+  }
+
+  @override
+  Future<ConversationSummary> setConversationUnread(
+    String queryOrId, {
+    required bool unread,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    throw const MessagesClientException(
+      'Changing conversation read/unread state requires the JXA backend '
       '("Allow JavaScript from Apple Events").',
     );
   }
@@ -822,6 +895,37 @@ for (const href of targets) {
   delay(0.35);
 }
 JSON.stringify(outcomes);
+''';
+}
+
+String _buildJxaSetUnreadScript({
+  required String targetHref,
+  required bool unread,
+}) {
+  final targetLabel = unread ? 'Mark as unread' : 'Mark as read';
+  return '''
+const opened = msgTab.execute({javascript: `(() => {
+  const a = document.querySelector('a[href="' + ${jsonEncode(targetHref)} + '"]');
+  if (!a) return "NOT_FOUND";
+  a.scrollIntoView({block: "nearest"});
+  const item = a.closest("mws-conversation-list-item");
+  const btn = item ? item.querySelector("button.menu-button") : null;
+  if (!btn) return "NO_MENU_BTN";
+  btn.click();
+  return "OPENED";
+})()`});
+if (opened !== "OPENED") {
+  opened;
+} else {
+  delay(0.2);
+  msgTab.execute({javascript: `(() => {
+    const itemBtn = Array.from(document.querySelectorAll("[role=menuitem], .mat-mdc-menu-item"))
+      .find(el => (el.innerText || "").trim() === ${jsonEncode(targetLabel)});
+    if (!itemBtn) return "NO_MENU_ITEM";
+    itemBtn.click();
+    return "UPDATED";
+  })()`});
+}
 ''';
 }
 
