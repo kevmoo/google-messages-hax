@@ -1,8 +1,9 @@
 name: google_messages_hax
 version: 0.1.0-wip
 description: >-
-  Read-only macOS automation and CLI for the Google Messages Chrome PWA using
-  JXA Apple Events and native ApplicationServices Accessibility.
+  macOS automation and CLI for the Google Messages Chrome PWA using JXA Apple
+  Events and native ApplicationServices Accessibility, with strict unread-state
+  protection.
 repository: https://github.com/kevmoo/google-messages-hax
 publish_to: none
 

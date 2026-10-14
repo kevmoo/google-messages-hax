@@ -1,28 +1,74 @@
-Read-only macOS automation and CLI for the Google Messages Chrome PWA using JXA
-Apple Events (`osascript`) and native `ApplicationServices` Accessibility
-(`AXUIElement`).
+macOS automation and CLI for the Google Messages Chrome PWA using JXA Apple
+Events (`osascript`) and native `ApplicationServices` Accessibility
+(`AXUIElement`), designed around strict unread-state preservation.
 
 ## Overview
 
-`google_messages_hax` inspects your running Google Messages Chrome PWA in the
-background without focusing the window or marking unread conversations as read:
+`google_messages_hax` inspects and automates your running Google Messages Chrome
+PWA in the background (`hasFocus: false`) without stealing window focus or
+accidentally marking unread conversations as read:
 
 1. **Zero-click sidebar & unread inspection**: Reads conversation IDs, contact
    and group names, full latest-message snippets, relative timestamps, and
    `UNREAD` / `ACTIVE` / `PINNED` state directly from the DOM or Accessibility
    tree.
-2. **Strict unread protection**: By default, `gmessages read <query>` refuses to
-   click into any conversation marked `UNREAD` (or switch away from an unread
-   active thread), returning the sidebar's full latest-message snippet instead
-   unless `--allow-mark-read` is explicitly passed.
+2. **Strict unread protection**: By default, `gmessages read` and
+   `gmessages send` refuse to click into any conversation marked `UNREAD` (or
+   switch away from an unread active thread), returning the sidebar's full
+   latest-message snippet instead unless `--allow-mark-read` is explicitly
+   passed.
 3. **Background thread reading & restoration**: For already-read conversations,
    switches to the target conversation in the background, optionally scrolls up
    (`--scroll-pages`) to load older message history, and restores the previously
    selected conversation.
-4. **Hybrid backend (`--backend auto|jxa|ax`)**: Uses fast JXA JavaScript
-   execution (`View > Developer > Allow JavaScript from Apple Events`) when
-   enabled and automatically falls back to native macOS Accessibility (`swift`
-   `AXUIElement` with `AXManualAccessibility`) when JXA JS is turned off.
+4. **Sidebar-native mutations (`archive`, `mark-unread`, `mark-read`)**: Uses
+   each sidebar row's options menu (`button.menu-button`) so conversations can
+   be archived or toggled between read and unread without opening the thread.
+5. **Hybrid background SMS sending (`send`)**: Populates the compose box via JXA
+   `InputEvent` and presses the `Send SMS` button via native macOS Accessibility
+   (`kAXPressAction`) so Chromium receives a hardware-trusted click
+   (`event.isTrusted === true`) in the background.
+
+## Requirements & Constraints
+
+- **macOS + Google Chrome only**: This package invokes macOS `/usr/bin/osascript`
+  (JXA targeting `com.google.Chrome`) and `/usr/bin/swift`
+  (`ApplicationServices` / `AXUIElement`). Even when Google Messages is
+  installed as a standalone Chrome PWA (`Messages.app` / `app_mode_loader`), its
+  window and tabs are hosted inside the main `Google Chrome` process via
+  `RemoteCocoa`. Other browsers (Safari, Firefox, Arc) and non-macOS platforms
+  are not supported.
+- **Active Google Messages session**: A `https://messages.google.com/web` tab or
+  installed Chrome PWA window must already be open and paired with your phone.
+- **Chrome Apple Events JS setting (recommended)**: For full functionality,
+  enable **View > Developer > Allow JavaScript from Apple Events** in Google
+  Chrome.
+- **macOS Privacy permissions**: Your terminal or agent host must be granted:
+  - **System Settings > Privacy & Security > Automation** (to allow `osascript`
+    to control `Google Chrome`).
+  - **System Settings > Privacy & Security > Accessibility** (required for the
+    `ax` fallback backend and for `gmessages send` to set
+    `AXManualAccessibility` and invoke `AXPress` on `Send SMS`).
+- **Why `send` requires both JXA and Accessibility (`AXPress`)**: Google
+  Messages Web ignores untrusted synthetic DOM `.click()` events
+  (`event.isTrusted === false`) on `<mw-message-send-button>`, while setting the
+  `AXTextArea` value via Accessibility alone does not fire Angular's internal
+  `InputEvent` listener that enables the button. `gmessages send` combines JXA
+  (`InputEvent` composition) with Swift `AXUIElementPerformAction`
+  (`kAXPressAction`).
+
+### Backend Capability Matrix (`--backend auto|jxa|ax`)
+
+| Operation | `jxa` Backend (Apple Events JS Enabled) | `ax` Fallback (Apple Events JS Off) |
+| :--- | :--- | :--- |
+| `list` / `search` (including `--load-more`) | Supported (includes conversation IDs & `href`s) | Supported (positional `ax-<n>` IDs) |
+| `active` (read currently selected thread) | Supported (includes `--scroll-pages`) | Supported (currently visible messages) |
+| `read` (already-read non-active thread) | Supported (switches in background & restores active thread) | Snippet-only (strict zero-click mode) |
+| `read` (`UNREAD` thread without `--allow-mark-read`) | Snippet-only (preserves unread state) | Snippet-only (preserves unread state) |
+| `spam` (audit `Spam & blocked` modal + URLs) | Supported | Not supported |
+| `archive` / `mark-unread` / `mark-read` | Supported | Not supported |
+| `send` (background SMS/RCS reply) | Supported (uses JXA `InputEvent` + Swift `AXPress`) | Not supported |
+| `doctor` (zero-click selector health check) | Supported (audits live DOM selectors) | Supported (verifies `AXWebArea` conversation list) |
 
 ## CLI Usage
 
