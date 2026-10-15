@@ -233,6 +233,31 @@ final class ArchiveConversationResult {
   };
 }
 
+/// Result of blocking and reporting spam on a conversation from the sidebar.
+final class BlockConversationResult {
+  final ConversationSummary conversation;
+  final bool dryRun;
+  final bool blocked;
+  final bool reportedSpam;
+  final MessagesBackend backendUsed;
+
+  const BlockConversationResult({
+    required this.conversation,
+    required this.dryRun,
+    required this.blocked,
+    this.reportedSpam = true,
+    required this.backendUsed,
+  });
+
+  Map<String, Object?> toJson() => {
+    'conversation': conversation.toJson(),
+    'dryRun': dryRun,
+    'blocked': blocked,
+    'reportedSpam': reportedSpam,
+    'backendUsed': backendUsed.name,
+  };
+}
+
 /// Zero-click live DOM selector contract report for the Google Messages PWA.
 final class DomHealthReport {
   final bool ok;

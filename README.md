@@ -117,11 +117,12 @@ is set, and supports `--dry-run`):
 dart run bin/gmessages.dart send "(555) 010-1234" "STOP" --dry-run
 ```
 
-Archive one or more conversations directly from the sidebar options menu without
-opening them:
+Archive or block (& report spam) one or more conversations directly from the
+sidebar options menu without opening them:
 
 ```sh
 dart run bin/gmessages.dart archive "(555) 010-1234" "thread-202" --dry-run
+dart run bin/gmessages.dart block "(555) 010-1234" --dry-run
 ```
 
 Mark a conversation as unread or read via the sidebar options menu:

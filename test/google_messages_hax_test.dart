@@ -231,12 +231,14 @@ void main() {
     );
 
     test('archiveConversations supports dry-run and live archive', () async {
+      String? archiveScript;
       final client = JxaMessagesClient(
         processRunner: (exe, args) async {
           final script = args.last;
           if (script.contains('window.__gmessagesHax.listConversations()')) {
             return ProcessResult(1, 0, conversationsJson, '');
           }
+          archiveScript = script;
           return ProcessResult(
             1,
             0,
@@ -264,6 +266,43 @@ void main() {
         'thread-unread',
       ]);
       expect(live.every((r) => r.archived), isTrue);
+      expect(
+        archiveScript,
+        contains(r'document.querySelector("a[href=\"${href}\"]")'),
+      );
+    });
+
+    test('blockConversations supports dry-run and live block', () async {
+      String? blockScript;
+      final client = JxaMessagesClient(
+        processRunner: (exe, args) async {
+          final script = args.last;
+          if (script.contains('window.__gmessagesHax.listConversations()')) {
+            return ProcessResult(1, 0, conversationsJson, '');
+          }
+          blockScript = script;
+          return ProcessResult(
+            1,
+            0,
+            jsonEncode({'/web/conversations/thread-unread': 'BLOCKED'}),
+            '',
+          );
+        },
+      );
+
+      final dry = await client.blockConversations([
+        'Acme Dental',
+      ], dryRun: true);
+      expect(dry.single.dryRun, isTrue);
+      expect(dry.single.blocked, isFalse);
+
+      final live = await client.blockConversations(['Acme Dental']);
+      expect(live.single.conversation.id, 'thread-unread');
+      expect(live.single.blocked, isTrue);
+      expect(
+        blockScript,
+        contains(r'document.querySelector("a[href=\"${href}\"]")'),
+      );
     });
 
     test(
@@ -381,6 +420,17 @@ final class _FakeMessagesClient implements MessagesClient {
   @override
   Future<List<ArchiveConversationResult>> archiveConversations(
     List<String> queriesOrIds, {
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    if (error != null) throw error!;
+    return const [];
+  }
+
+  @override
+  Future<List<BlockConversationResult>> blockConversations(
+    List<String> queriesOrIds, {
+    bool reportSpam = true,
     int loadMorePages = 0,
     bool dryRun = false,
   }) async {
