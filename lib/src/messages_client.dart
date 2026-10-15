@@ -70,6 +70,16 @@ abstract interface class MessagesClient {
     bool dryRun = false,
   });
 
+  /// Blocks and optionally reports spam on conversations matching each entry in
+  /// [queriesOrIds] via the sidebar options menu (`button.menu-button` ->
+  /// `Block & report spam` -> `OK`).
+  Future<List<BlockConversationResult>> blockConversations(
+    List<String> queriesOrIds, {
+    bool reportSpam = true,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  });
+
   /// Marks the conversation matching [queryOrId] as unread (`unread: true`) or
   /// read (`unread: false`) via the sidebar options menu (`button.menu-button`
   /// -> `Mark as unread` / `Mark as read`).
@@ -169,6 +179,21 @@ final class HybridMessagesClient implements MessagesClient {
   }) => _runWithPolicy(
     (client) => client.archiveConversations(
       queriesOrIds,
+      loadMorePages: loadMorePages,
+      dryRun: dryRun,
+    ),
+  );
+
+  @override
+  Future<List<BlockConversationResult>> blockConversations(
+    List<String> queriesOrIds, {
+    bool reportSpam = true,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) => _runWithPolicy(
+    (client) => client.blockConversations(
+      queriesOrIds,
+      reportSpam: reportSpam,
       loadMorePages: loadMorePages,
       dryRun: dryRun,
     ),
@@ -421,6 +446,48 @@ final class JxaMessagesClient implements MessagesClient {
   }
 
   @override
+  Future<List<BlockConversationResult>> blockConversations(
+    List<String> queriesOrIds, {
+    bool reportSpam = true,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    if (queriesOrIds.isEmpty) return const [];
+    final conversations = await listConversations(loadMorePages: loadMorePages);
+    final targets = [
+      for (final q in queriesOrIds) _requireSingleMatch(conversations, q),
+    ];
+    if (dryRun) {
+      return [
+        for (final t in targets)
+          BlockConversationResult(
+            conversation: t,
+            dryRun: true,
+            blocked: false,
+            reportedSpam: reportSpam,
+            backendUsed: MessagesBackend.jxa,
+          ),
+      ];
+    }
+    final raw = await _runJxa(
+      _buildJxaBlockScript([
+        for (final t in targets) t.href,
+      ], reportSpam: reportSpam),
+    );
+    final statuses = jsonDecode(raw) as Map<String, Object?>;
+    return [
+      for (final t in targets)
+        BlockConversationResult(
+          conversation: t,
+          dryRun: false,
+          blocked: statuses[t.href] == 'BLOCKED',
+          reportedSpam: reportSpam,
+          backendUsed: MessagesBackend.jxa,
+        ),
+    ];
+  }
+
+  @override
   Future<ConversationSummary> setConversationUnread(
     String queryOrId, {
     required bool unread,
@@ -579,6 +646,19 @@ final class AxMessagesClient implements MessagesClient {
   }) async {
     throw const MessagesClientException(
       'Archiving conversations requires the JXA backend '
+      '("Allow JavaScript from Apple Events").',
+    );
+  }
+
+  @override
+  Future<List<BlockConversationResult>> blockConversations(
+    List<String> queriesOrIds, {
+    bool reportSpam = true,
+    int loadMorePages = 0,
+    bool dryRun = false,
+  }) async {
+    throw const MessagesClientException(
+      'Blocking conversations requires the JXA backend '
       '("Allow JavaScript from Apple Events").',
     );
   }
@@ -870,7 +950,7 @@ const targets = $hrefsJson;
 const outcomes = {};
 for (const href of targets) {
   const opened = msgTab.execute({javascript: `(() => {
-    const a = document.querySelector('a[href=' + \${JSON.stringify(href)} + ']');
+    const a = document.querySelector("a[href=\\"\${href}\\"]");
     if (!a) return "NOT_FOUND";
     a.scrollIntoView({block: "nearest"});
     const item = a.closest("mws-conversation-list-item");
@@ -893,6 +973,63 @@ for (const href of targets) {
   })()`});
   outcomes[href] = clicked;
   delay(0.35);
+}
+JSON.stringify(outcomes);
+''';
+}
+
+String _buildJxaBlockScript(
+  List<String> targetHrefs, {
+  required bool reportSpam,
+}) {
+  final hrefsJson = jsonEncode(targetHrefs);
+  final wantReportJson = jsonEncode(reportSpam);
+  return '''
+const targets = $hrefsJson;
+const wantReport = $wantReportJson;
+const outcomes = {};
+for (const href of targets) {
+  const opened = msgTab.execute({javascript: `(() => {
+    const a = document.querySelector("a[href=\\"\${href}\\"]");
+    if (!a) return "NOT_FOUND";
+    a.scrollIntoView({block: "nearest"});
+    const item = a.closest("mws-conversation-list-item");
+    const btn = item ? item.querySelector("button.menu-button") : null;
+    if (!btn) return "NO_MENU_BTN";
+    btn.click();
+    return "OPENED";
+  })()`});
+  if (opened !== "OPENED") {
+    outcomes[href] = opened;
+    continue;
+  }
+  delay(0.25);
+  const dialogOpened = msgTab.execute({javascript: `(() => {
+    const blockBtn = Array.from(document.querySelectorAll("[role=menuitem], .mat-mdc-menu-item"))
+      .find(el => (el.innerText || "").includes("Block"));
+    if (!blockBtn) return "NO_BLOCK_ITEM";
+    blockBtn.click();
+    return "DIALOG_OPENED";
+  })()`});
+  if (dialogOpened !== "DIALOG_OPENED") {
+    outcomes[href] = dialogOpened;
+    continue;
+  }
+  delay(0.35);
+  const confirmed = msgTab.execute({javascript: `(() => {
+    const dlg = document.querySelector("mat-dialog-container, [role=dialog]");
+    if (!dlg) return "NO_DIALOG";
+    const cb = dlg.querySelector("input[type=checkbox]");
+    if (cb && Boolean(cb.checked) !== $wantReportJson) {
+      cb.click();
+    }
+    const okBtn = dlg.querySelector("button[aria-label=OK], button.primary-button");
+    if (!okBtn) return "NO_OK_BTN";
+    okBtn.click();
+    return "BLOCKED";
+  })()`});
+  outcomes[href] = confirmed;
+  delay(0.5);
 }
 JSON.stringify(outcomes);
 ''';

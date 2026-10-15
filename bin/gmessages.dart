@@ -98,6 +98,7 @@ Usage:
   gmessages spam [options]
   gmessages send <name-or-id> <message> [--dry-run] [--allow-mark-read]
   gmessages archive <name-or-id> [...more] [--dry-run]
+  gmessages block <name-or-id> [...more] [--dry-run]
   gmessages mark-unread <name-or-id> [--dry-run]
   gmessages mark-read <name-or-id> [--dry-run]
   gmessages doctor [options]
@@ -171,6 +172,13 @@ Future<int> _runCli(ArgResults results, ArgParser parser) async {
       asJson: asJson,
     ),
     'archive' => _handleArchive(
+      rest: rest,
+      client: client,
+      loadMore: loadMore,
+      dryRun: dryRun,
+      asJson: asJson,
+    ),
+    'block' => _handleBlock(
       rest: rest,
       client: client,
       loadMore: loadMore,
@@ -318,6 +326,41 @@ Future<int> _handleArchive({
     stdout.writeln('$status ${r.conversation.name} [${r.conversation.id}]');
   }
   return results.every((r) => r.dryRun || r.archived) ? 0 : 1;
+}
+
+Future<int> _handleBlock({
+  required List<String> rest,
+  required MessagesClient client,
+  required int loadMore,
+  required bool dryRun,
+  required bool asJson,
+}) async {
+  if (rest.length < 2) {
+    throw const FormatException(
+      'Usage: gmessages block <name-or-id> [...more] [--dry-run]',
+    );
+  }
+  final targets = rest.skip(1).toList();
+  final results = await client.blockConversations(
+    targets,
+    loadMorePages: loadMore,
+    dryRun: dryRun,
+  );
+  if (asJson) {
+    stdout.writeln(
+      const JsonEncoder.withIndent(
+        '  ',
+      ).convert([for (final r in results) r.toJson()]),
+    );
+    return 0;
+  }
+  for (final r in results) {
+    final status = r.dryRun
+        ? '[DRY-RUN] Would block & report spam:'
+        : (r.blocked ? 'Blocked & reported spam:' : 'Failed to block:');
+    stdout.writeln('$status ${r.conversation.name} [${r.conversation.id}]');
+  }
+  return results.every((r) => r.dryRun || r.blocked) ? 0 : 1;
 }
 
 Future<int> _handleSetUnread({

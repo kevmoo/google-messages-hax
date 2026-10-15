@@ -13,6 +13,7 @@ export 'src/messages_client.dart'
 export 'src/models.dart'
     show
         ArchiveConversationResult,
+        BlockConversationResult,
         ConversationSummary,
         DomHealthReport,
         MessagesBackend,
