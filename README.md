@@ -25,8 +25,8 @@ Events (`osascript`) and native `ApplicationServices` Accessibility
 
 ## Requirements & Constraints
 
-- **macOS + Google Chrome only**: This package invokes macOS `/usr/bin/osascript`
-  (JXA targeting `com.google.Chrome`) and `/usr/bin/swift`
+- **macOS + Google Chrome only**: This package invokes macOS
+  `/usr/bin/osascript` (JXA targeting `com.google.Chrome`) and `/usr/bin/swift`
   (`ApplicationServices` / `AXUIElement`). Even when Google Messages is
   installed as a standalone Chrome PWA (`Messages.app` / `app_mode_loader`), its
   window and tabs are hosted inside the main `Google Chrome` process via
@@ -53,16 +53,16 @@ Events (`osascript`) and native `ApplicationServices` Accessibility
 
 ### Backend Capability Matrix (`--backend auto|jxa|ax`)
 
-| Operation | `jxa` Backend (Apple Events JS Enabled) | `ax` Fallback (Apple Events JS Off) |
-| :--- | :--- | :--- |
-| `list` / `search` (including `--load-more`) | Supported (includes conversation IDs & `href`s) | Supported (positional `ax-<n>` IDs) |
-| `active` (read currently selected thread) | Supported (includes `--scroll-pages`) | Supported (currently visible messages) |
-| `read` (already-read non-active thread) | Supported (switches in background & restores active thread) | Snippet-only (strict zero-click mode) |
-| `read` (`UNREAD` thread without `--allow-mark-read`) | Snippet-only (preserves unread state) | Snippet-only (preserves unread state) |
-| `spam` (audit `Spam & blocked` modal + URLs) | Supported | Not supported |
-| `archive` / `mark-unread` / `mark-read` | Supported | Not supported |
-| `send` (background SMS/RCS reply) | Supported (uses JXA `InputEvent` + Swift `AXPress`) | Not supported |
-| `doctor` (zero-click selector health check) | Supported (audits live DOM selectors) | Supported (verifies `AXWebArea` conversation list) |
+| Operation                                            | `jxa` Backend (Apple Events JS Enabled)                     | `ax` Fallback (Apple Events JS Off)                |
+| :--------------------------------------------------- | :---------------------------------------------------------- | :------------------------------------------------- |
+| `list` / `search` (including `--load-more`)          | Supported (includes conversation IDs & `href`s)             | Supported (positional `ax-<n>` IDs)                |
+| `active` (read currently selected thread)            | Supported (includes `--scroll-pages`)                       | Supported (currently visible messages)             |
+| `read` (already-read non-active thread)              | Supported (switches in background & restores active thread) | Snippet-only (strict zero-click mode)              |
+| `read` (`UNREAD` thread without `--allow-mark-read`) | Snippet-only (preserves unread state)                       | Snippet-only (preserves unread state)              |
+| `spam` (audit `Spam & blocked` modal + URLs)         | Supported                                                   | Not supported                                      |
+| `archive` / `mark-unread` / `mark-read`              | Supported                                                   | Not supported                                      |
+| `send` (background SMS/RCS reply)                    | Supported (uses JXA `InputEvent` + Swift `AXPress`)         | Not supported                                      |
+| `doctor` (zero-click selector health check)          | Supported (audits live DOM selectors)                       | Supported (verifies `AXWebArea` conversation list) |
 
 ## CLI Usage
 
