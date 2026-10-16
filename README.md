@@ -2,6 +2,11 @@ macOS automation and CLI for the Google Messages Chrome PWA using JXA Apple
 Events (`osascript`) and native `ApplicationServices` Accessibility
 (`AXUIElement`), designed around strict unread-state preservation.
 
+> [!NOTE]
+>
+> This is an unofficial personal project and is not affiliated with, endorsed
+> by, or supported by Google.
+
 1. **Zero-click sidebar & unread inspection**: Reads conversation IDs, contact
    and group names, full latest-message snippets, relative timestamps, and
    `UNREAD` / `ACTIVE` / `PINNED` state directly from the DOM or Accessibility
